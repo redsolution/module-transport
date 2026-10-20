@@ -10,7 +10,7 @@ from xabber_server_panel.base_modules.modules.models import ModuleServerConfig
 from xabber_server_panel.base_modules.users.decorators import permission_read, permission_write
 
 from .forms import ModuleServerConfigForm
-from .options import dump_options, parse_allowed_components, parse_iq_auth_secret
+from .options import dump_options, parse_allowed_components
 
 
 MODULE_NAME = 'mod_transport'
@@ -44,9 +44,6 @@ class InfoView(LoginRequiredMixin, TemplateView):
         return {
             'status': 'enabled' if enabled else 'disabled',
             'allowed_components': '\n'.join(allowed_components),
-            'iq_auth_secret': parse_iq_auth_secret(
-                server_config.get_options() if server_config else ''
-            ),
         }
 
     @permission_read
@@ -91,10 +88,7 @@ class InfoView(LoginRequiredMixin, TemplateView):
                 if line.strip()
             ]
             server_config.set_hosts(sorted(hosts))
-            server_config.set_options(dump_options(
-                allowed_components,
-                form.cleaned_data['iq_auth_secret'],
-            ))
+            server_config.set_options(dump_options(allowed_components))
             server_config.save()
             make_xmpp_config()
             messages.success(request, 'Module configuration updated successfully.')

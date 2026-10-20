@@ -50,12 +50,10 @@ depends(_Host, _Opts) ->
     [{mod_roster, hard}].
 
 mod_options(_Host) ->
-    [{allowed_components, []}, {iq_auth_secret, <<>>}].
+    [{allowed_components, []}].
 
 mod_opt_type(allowed_components) ->
     fun normalize_allowed_components/1;
-mod_opt_type(iq_auth_secret) ->
-    fun to_binary/1;
 mod_opt_type(_) ->
     [allowed_components].
 
@@ -65,9 +63,6 @@ mod_doc() ->
         opts => [
             {allowed_components, #{
                 value => <<"component domains allowed to manage their roster contacts">>
-            }},
-            {iq_auth_secret, #{
-                value => <<"shared secret used to authenticate roster IQ requests">>
             }}
         ]
     }.
@@ -84,9 +79,9 @@ decode_iq_subel(#xmlel{} = El) ->
 process_iq(#iq{type = set, lang = Lang} = IQ) ->
     case authorize_iq(IQ) of
         ok ->
-            case authenticate_iq(IQ) of
-                ok ->
-                    process_authorized_iq(IQ);
+            case decrypt_iq(IQ) of
+                {ok, Request} ->
+                    process_authorized_iq(IQ, Request);
                 {error, Text} ->
                     xmpp:make_error(IQ, xmpp:err_forbidden(Text, Lang))
             end;
@@ -100,19 +95,13 @@ process_iq(#iq{lang = Lang} = IQ) ->
 process_authorized_iq(
     #iq{
         lang = Lang,
-        sub_els = [
-            #xmlel{
-                name = <<"query">>,
-                attrs = Attrs,
-                children = Children
-            }
-        ]
-    } = IQ
+        from = #jid{lserver = RequestComponent},
+        to = #jid{lserver = RequestHost}
+    } = IQ,
+    #xmlel{name = <<"request">>, attrs = Attrs, children = Children}
 ) ->
-    case {attr(<<"xmlns">>, Attrs), attr(<<"op">>, Attrs)} of
-        {?NS_TRANSPORT_ROSTER, Op} when is_binary(Op), Op =/= <<>> ->
-            #jid{lserver = RequestHost} = IQ#iq.to,
-            #jid{lserver = RequestComponent} = IQ#iq.from,
+    case attr(<<"op">>, Attrs) of
+        Op when is_binary(Op), Op =/= <<>> ->
             Payload = maps:merge(
                 fields_to_payload(Children),
                 #{request_host => RequestHost, request_component => RequestComponent}
@@ -122,8 +111,8 @@ process_authorized_iq(
             Text = <<"Malformed transport roster query">>,
             xmpp:make_error(IQ, xmpp:err_bad_request(Text, Lang))
     end;
-process_authorized_iq(#iq{lang = Lang} = IQ) ->
-    Text = <<"A single transport roster query is required">>,
+process_authorized_iq(#iq{lang = Lang} = IQ, _) ->
+    Text = <<"Malformed encrypted transport roster request">>,
     xmpp:make_error(IQ, xmpp:err_bad_request(Text, Lang)).
 
 run_operation(<<"add-roster-contact">>, Payload) ->
@@ -187,47 +176,54 @@ authorize_iq(
 authorize_iq(_) ->
     {error, <<"Transport roster operations require bare component and server JIDs">>}.
 
-authenticate_iq(
-    #iq{
-        id = IQId,
-        to = #jid{lserver = Host},
-        sub_els = [#xmlel{attrs = Attrs}]
-    }
-) when is_binary(IQId), IQId =/= <<>> ->
-    Secret = gen_mod:get_module_opt(Host, ?MODULE, iq_auth_secret, <<>>),
-    Signature = attr(<<"auth-signature">>, Attrs),
-    case {byte_size(Secret) >= 32, decode_hex(Signature)} of
-        {true, {ok, Received}} ->
-            Expected = crypto:mac(hmac, sha256, Secret, IQId),
-            case constant_time_equal(Expected, Received) of
-                true -> ok;
-                false -> {error, <<"Invalid roster IQ authentication signature">>}
-            end;
-        {false, _} ->
-            {error, <<"Roster IQ authentication secret is not configured">>};
-        {_, _} ->
-            {error, <<"Invalid roster IQ authentication signature">>}
+decrypt_iq(#iq{from = #jid{lserver = Component}, sub_els = [
+    #xmlel{name = <<"query">>, attrs = Attrs, children = [
+        #xmlel{name = <<"payload">>, attrs = PayloadAttrs, children = [{xmlcdata, Encoded}]}
+    ]}
+]}) ->
+    case {attr(<<"xmlns">>, Attrs), attr(<<"encoding">>, PayloadAttrs),
+          component_password(Component)} of
+        {?NS_TRANSPORT_ROSTER, <<"aes-256-gcm">>, {ok, Password}} ->
+            decrypt_payload(Password, Encoded);
+        _ ->
+            {error, <<"Invalid encrypted roster IQ">>}
     end;
-authenticate_iq(_) ->
-    {error, <<"Roster IQ id and authentication signature are required">>}.
+decrypt_iq(_) ->
+    {error, <<"Invalid encrypted roster IQ">>}.
 
-decode_hex(Value) when is_binary(Value), byte_size(Value) =:= 64 ->
-    try binary:decode_hex(Value) of
-        Decoded -> {ok, Decoded}
+component_password(Component) ->
+    Listeners = ejabberd_config:get_option(listen, []),
+    Passwords = [Password || {_Port, ejabberd_service, Opts} <- Listeners,
+        {Domain, HostOpts} <- proplists:get_value(hosts, Opts, []),
+        Domain =:= Component,
+        Password <- [service_password(HostOpts)],
+        is_binary(Password), Password =/= <<>>],
+    case lists:usort(Passwords) of
+        [Password] -> {ok, Password};
+        _ -> error
+    end.
+
+service_password(HostOpts) when is_list(HostOpts) ->
+    proplists:get_value(password, HostOpts);
+service_password(Password) when is_binary(Password) ->
+    Password;
+service_password(_) ->
+    undefined.
+
+decrypt_payload(Password, Encoded) ->
+    try
+        <<Nonce:12/binary, Rest/binary>> = base64:decode(Encoded),
+        CipherSize = byte_size(Rest) - 16,
+        <<Ciphertext:CipherSize/binary, Tag:16/binary>> = Rest,
+        Key = crypto:hash(sha256, <<"xabber-roster-iq-v1", 0, Password/binary>>),
+        Plaintext = crypto:crypto_one_time_aead(
+            aes_256_gcm, Key, Nonce, Ciphertext, <<>>, Tag, false
+        ),
+        #xmlel{name = <<"request">>} = Request = fxml_stream:parse_element(Plaintext),
+        {ok, Request}
     catch
-        error:badarg -> error
-    end;
-decode_hex(_) ->
-    error.
-
-constant_time_equal(Left, Right) when byte_size(Left) =:= byte_size(Right) ->
-    0 =:= lists:foldl(
-        fun({A, B}, Difference) -> Difference bor (A bxor B) end,
-        0,
-        lists:zip(binary_to_list(Left), binary_to_list(Right))
-    );
-constant_time_equal(_, _) ->
-    false.
+        _:_ -> {error, <<"Invalid encrypted roster IQ">>}
+    end.
 
 validate_owner_and_contact(Payload) ->
     case {

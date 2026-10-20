@@ -1,14 +1,6 @@
 """Serialization helpers for the module's small YAML option set."""
 
 
-def parse_iq_auth_secret(raw_options):
-    for line in (raw_options or '').splitlines():
-        stripped = line.strip()
-        if stripped.startswith('iq_auth_secret:'):
-            return stripped.split(':', 1)[1].strip().strip('"\'')
-    return ''
-
-
 def parse_allowed_components(raw_options):
     components = []
     in_allowed_components = False
@@ -36,7 +28,7 @@ def parse_allowed_components(raw_options):
     return [component for component in components if component]
 
 
-def dump_options(components, iq_auth_secret):
+def dump_options(components):
     if components:
         lines = ['allowed_components:']
         for component in components:
@@ -44,6 +36,4 @@ def dump_options(components, iq_auth_secret):
             lines.append('  - "%s"' % escaped)
     else:
         lines = ['allowed_components: []']
-    escaped_secret = iq_auth_secret.replace('"', '\\"')
-    lines.append('iq_auth_secret: "%s"' % escaped_secret)
     return '\n'.join(lines) + '\n'

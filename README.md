@@ -23,14 +23,13 @@ Both `max.example.com` and `telegram.example.com` can be placed in the same
 `allowed_components` list. A component may manage only contacts whose JIDs
 belong to one of the allowed component domains.
 
-Every roster IQ must also contain `auth-signature`, an HMAC-SHA256 signature of
-the stanza `id`. Configure the same secret (at least 32 bytes) in the module UI
-and in the transport configuration:
-
-```ini
-[security]
-iq_auth_secret = replace-with-a-long-random-secret
-```
+Roster IQ request fields are encrypted with AES-256-GCM. The key is SHA-256 of
+`xabber-roster-iq-v1`, a zero byte, and the component password. Each request
+uses a fresh 12-byte nonce; `<payload encoding="aes-256-gcm">` contains base64
+of the nonce followed by ciphertext and the 16-byte authentication tag. The
+module reads the component password from the corresponding `ejabberd_service`
+listener configuration. Configure an explicit password for each allowed
+component. No separate roster IQ secret is needed.
 
 ## Build
 
