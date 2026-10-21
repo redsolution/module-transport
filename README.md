@@ -41,9 +41,11 @@ element carries the component's time-based one-time password:
 The 8-digit code uses RFC 6238 dynamic truncation with HMAC-SHA256, the
 component password, and the current Unix time divided by 30. The module
 accepts only the current 30-second window. It reads the component password
-from the corresponding `ejabberd_service` listener configuration. Configure
-an explicit password for each allowed component; no separate IQ secret is
-needed. TOTP authenticates knowledge of the component password but does not
+from the corresponding `ejabberd_service` listener configuration. Verification
+uses the server's `hotp:valid_totp/3` with SHA-256; the raw component password
+is Base64-encoded before passing it to that function. Configure an explicit
+password for each allowed component; no separate IQ secret is needed. TOTP
+authenticates knowledge of the component password but does not
 encrypt or sign the request fields. A captured code can be reused for any
 roster IQ during its time window.
 

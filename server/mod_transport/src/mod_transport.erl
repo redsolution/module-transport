@@ -221,23 +221,17 @@ service_password(_) ->
 
 verify_totp(Password, Code) when is_binary(Code) ->
     try
-        Counter = erlang:system_time(second) div ?TOTP_PERIOD,
-        CounterBytes = <<Counter:64/big-unsigned-integer>>,
-        ExpectedCode = totp_code(Password, CounterBytes),
-        crypto:hash_equals(ExpectedCode, Code)
+        hotp:valid_totp(Code, base64:encode(Password), [
+            {digest_method, sha256},
+            {token_length, 8},
+            {interval_length, ?TOTP_PERIOD},
+            {window, 0}
+        ])
     catch
         _:_ -> false
     end;
 verify_totp(_, _) ->
     false.
-
-totp_code(Password, CounterBytes) ->
-    Digest = crypto:mac(hmac, sha256, Password, CounterBytes),
-    Offset = binary:last(Digest) band 16#0f,
-    <<_:Offset/binary, A, B, C, D, _/binary>> = Digest,
-    Value = (((A band 16#7f) bsl 24) bor (B bsl 16) bor
-             (C bsl 8) bor D) rem 100000000,
-    list_to_binary(io_lib:format("~8..0B", [Value])).
 
 validate_owner_and_contact(Payload) ->
     case {
