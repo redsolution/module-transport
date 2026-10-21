@@ -23,13 +23,29 @@ Both `max.example.com` and `telegram.example.com` can be placed in the same
 `allowed_components` list. A component may manage only contacts whose JIDs
 belong to one of the allowed component domains.
 
-Roster IQ request fields are encrypted with AES-256-GCM. The key is SHA-256 of
-`xabber-roster-iq-v1`, a zero byte, and the component password. Each request
-uses a fresh 12-byte nonce; `<payload encoding="aes-256-gcm">` contains base64
-of the nonce followed by ciphertext and the 16-byte authentication tag. The
-module reads the component password from the corresponding `ejabberd_service`
-listener configuration. Configure an explicit password for each allowed
-component. No separate roster IQ secret is needed.
+Roster IQ fields are sent as clear XML inside `<request>`. A sibling `<auth>`
+element carries the component's time-based one-time password:
+
+```xml
+<query xmlns="urn:xabber:transport:roster:1">
+  <request op="add-roster-contact">
+    <field name="owner_jid">user@example.com</field>
+    <field name="contact_jid">chat-42@max.example.com</field>
+    <field name="name">Alice</field>
+    <group>MAX</group>
+  </request>
+  <auth algorithm="totp-sha256" period="30">12345678</auth>
+</query>
+```
+
+The 8-digit code uses RFC 6238 dynamic truncation with HMAC-SHA256, the
+component password, and the current Unix time divided by 30. The module
+accepts only the current 30-second window. It reads the component password
+from the corresponding `ejabberd_service` listener configuration. Configure
+an explicit password for each allowed component; no separate IQ secret is
+needed. TOTP authenticates knowledge of the component password but does not
+encrypt or sign the request fields. A captured code can be reused for any
+roster IQ during its time window.
 
 ## Build
 

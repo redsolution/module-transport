@@ -22,6 +22,7 @@
 -export([decode_iq_subel/1, process_iq/1]).
 
 -define(NS_TRANSPORT_ROSTER, <<"urn:xabber:transport:roster:1">>).
+-define(TOTP_PERIOD, 30).
 
 %%====================================================================
 %% gen_mod callbacks
@@ -79,7 +80,7 @@ decode_iq_subel(#xmlel{} = El) ->
 process_iq(#iq{type = set, lang = Lang} = IQ) ->
     case authorize_iq(IQ) of
         ok ->
-            case decrypt_iq(IQ) of
+            case authenticate_request(IQ) of
                 {ok, Request} ->
                     process_authorized_iq(IQ, Request);
                 {error, Text} ->
@@ -112,7 +113,7 @@ process_authorized_iq(
             xmpp:make_error(IQ, xmpp:err_bad_request(Text, Lang))
     end;
 process_authorized_iq(#iq{lang = Lang} = IQ, _) ->
-    Text = <<"Malformed encrypted transport roster request">>,
+    Text = <<"Malformed transport roster request">>,
     xmpp:make_error(IQ, xmpp:err_bad_request(Text, Lang)).
 
 run_operation(<<"add-roster-contact">>, Payload) ->
@@ -176,20 +177,28 @@ authorize_iq(
 authorize_iq(_) ->
     {error, <<"Transport roster operations require bare component and server JIDs">>}.
 
-decrypt_iq(#iq{from = #jid{lserver = Component}, sub_els = [
-    #xmlel{name = <<"query">>, attrs = Attrs, children = [
-        #xmlel{name = <<"payload">>, attrs = PayloadAttrs, children = [{xmlcdata, Encoded}]}
-    ]}
-]}) ->
-    case {attr(<<"xmlns">>, Attrs), attr(<<"encoding">>, PayloadAttrs),
+authenticate_request(#iq{
+    from = #jid{lserver = Component},
+    sub_els = [#xmlel{name = <<"query">>, attrs = QueryAttrs, children = [
+        #xmlel{name = <<"request">>} = Request,
+        #xmlel{name = <<"auth">>, attrs = AuthAttrs,
+               children = [{xmlcdata, Code}]}
+    ]}]
+}) ->
+    case {attr(<<"xmlns">>, QueryAttrs),
+          attr(<<"algorithm">>, AuthAttrs),
+          attr(<<"period">>, AuthAttrs),
           component_password(Component)} of
-        {?NS_TRANSPORT_ROSTER, <<"aes-256-gcm">>, {ok, Password}} ->
-            decrypt_payload(Password, Encoded);
+        {?NS_TRANSPORT_ROSTER, <<"totp-sha256">>, <<"30">>, {ok, Password}} ->
+            case verify_totp(Password, Code) of
+                true -> {ok, Request};
+                false -> {error, <<"Invalid roster IQ authentication">>}
+            end;
         _ ->
-            {error, <<"Invalid encrypted roster IQ">>}
+            {error, <<"Invalid roster IQ authentication">>}
     end;
-decrypt_iq(_) ->
-    {error, <<"Invalid encrypted roster IQ">>}.
+authenticate_request(_) ->
+    {error, <<"Invalid roster IQ authentication">>}.
 
 component_password(Component) ->
     Listeners = ejabberd_config:get_option(listen, []),
@@ -210,20 +219,25 @@ service_password(Password) when is_binary(Password) ->
 service_password(_) ->
     undefined.
 
-decrypt_payload(Password, Encoded) ->
+verify_totp(Password, Code) when is_binary(Code) ->
     try
-        <<Nonce:12/binary, Rest/binary>> = base64:decode(Encoded),
-        CipherSize = byte_size(Rest) - 16,
-        <<Ciphertext:CipherSize/binary, Tag:16/binary>> = Rest,
-        Key = crypto:hash(sha256, <<"xabber-roster-iq-v1", 0, Password/binary>>),
-        Plaintext = crypto:crypto_one_time_aead(
-            aes_256_gcm, Key, Nonce, Ciphertext, <<>>, Tag, false
-        ),
-        #xmlel{name = <<"request">>} = Request = fxml_stream:parse_element(Plaintext),
-        {ok, Request}
+        Counter = erlang:system_time(second) div ?TOTP_PERIOD,
+        CounterBytes = <<Counter:64/big-unsigned-integer>>,
+        ExpectedCode = totp_code(Password, CounterBytes),
+        crypto:hash_equals(ExpectedCode, Code)
     catch
-        _:_ -> {error, <<"Invalid encrypted roster IQ">>}
-    end.
+        _:_ -> false
+    end;
+verify_totp(_, _) ->
+    false.
+
+totp_code(Password, CounterBytes) ->
+    Digest = crypto:mac(hmac, sha256, Password, CounterBytes),
+    Offset = binary:last(Digest) band 16#0f,
+    <<_:Offset/binary, A, B, C, D, _/binary>> = Digest,
+    Value = (((A band 16#7f) bsl 24) bor (B bsl 16) bor
+             (C bsl 8) bor D) rem 100000000,
+    list_to_binary(io_lib:format("~8..0B", [Value])).
 
 validate_owner_and_contact(Payload) ->
     case {
