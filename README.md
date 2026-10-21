@@ -23,7 +23,7 @@ Both `max.example.com` and `telegram.example.com` can be placed in the same
 `allowed_components` list. A component may manage only contacts whose JIDs
 belong to one of the allowed component domains.
 
-Roster IQ fields are sent as clear XML inside `<request>`. A sibling `<auth>`
+Roster IQ fields are sent as clear XML inside `<request>`. A sibling `<verification_code>`
 element carries the component's time-based one-time password:
 
 ```xml
@@ -34,7 +34,7 @@ element carries the component's time-based one-time password:
     <field name="name">Alice</field>
     <group>MAX</group>
   </request>
-  <auth algorithm="totp-sha256" period="30">12345678</auth>
+  <verification_code algorithm="totp-sha256">12345678</verification_code>
 </query>
 ```
 

@@ -181,15 +181,14 @@ authenticate_request(#iq{
     from = #jid{lserver = Component},
     sub_els = [#xmlel{name = <<"query">>, attrs = QueryAttrs, children = [
         #xmlel{name = <<"request">>} = Request,
-        #xmlel{name = <<"auth">>, attrs = AuthAttrs,
+        #xmlel{name = <<"verification_code">>, attrs = VerificationAttrs,
                children = [{xmlcdata, Code}]}
     ]}]
 }) ->
     case {attr(<<"xmlns">>, QueryAttrs),
-          attr(<<"algorithm">>, AuthAttrs),
-          attr(<<"period">>, AuthAttrs),
+          attr(<<"algorithm">>, VerificationAttrs),
           component_password(Component)} of
-        {?NS_TRANSPORT_ROSTER, <<"totp-sha256">>, <<"30">>, {ok, Password}} ->
+        {?NS_TRANSPORT_ROSTER, <<"totp-sha256">>, {ok, Password}} ->
             case verify_totp(Password, Code) of
                 true -> {ok, Request};
                 false -> {error, <<"Invalid roster IQ authentication">>}
